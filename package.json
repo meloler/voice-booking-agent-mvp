@@ -1,0 +1,18 @@
+{
+  "name": "voice-booking-agent-mvp",
+  "version": "1.0.0",
+  "description": "MVP - Asistente de reservas por voz (SIP directo Twilio -> OpenAI Realtime API)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "ws": "^8.20.0"
+  }
+}

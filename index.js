@@ -332,7 +332,6 @@ function sendSessionUpdate(ws, callId) {
     type: 'session.update',
     session: {
       type: 'realtime',
-      voice: 'alloy',
       tools: TOOLS,
       tool_choice: 'auto',
       temperature: 0.6

@@ -59,9 +59,14 @@ const activeCalls = new Map();
 //
 
 app.post('/openai/realtime/call-incoming', (req, res) => {
-  const callId = req.body.call_id;
-  const from = req.body.from;
-  const to = req.body.to;
+  // Log del body COMPLETO para ver la estructura real de OpenAI
+  console.log('[WEBHOOK] Body completo:', JSON.stringify(req.body, null, 2));
+  console.log('[WEBHOOK] Headers:', JSON.stringify(req.headers, null, 2));
+
+  // Extraer campos — buscar en estructura plana y anidada
+  const callId = req.body.call_id || req.body.data?.call_id || req.body.id;
+  const from = req.body.from || req.body.data?.from;
+  const to = req.body.to || req.body.data?.to;
 
   console.log(`[WEBHOOK] Llamada entrante: call_id=${callId}, from=${from}, to=${to}`);
 

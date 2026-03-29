@@ -148,12 +148,11 @@ app.get('/health', (req, res) => {
 async function acceptCall(callId) {
   const url = `https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/accept`;
 
-  // Formato oficial: plano, sin wrapper "session"
+  // Formato oficial: solo type + model + instructions
   // Ref: https://developers.openai.com/api/docs/guides/realtime-sip
   const body = {
     type: 'realtime',
     model: 'gpt-realtime',
-    voice: 'alloy',
     instructions: SYSTEM_INSTRUCTIONS
   };
 
@@ -328,6 +327,7 @@ function sendSessionUpdate(ws, callId) {
   const sessionUpdate = {
     type: 'session.update',
     session: {
+      voice: 'alloy',
       tools: TOOLS,
       tool_choice: 'auto',
       temperature: 0.6

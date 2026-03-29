@@ -148,16 +148,13 @@ app.get('/health', (req, res) => {
 async function acceptCall(callId) {
   const url = `https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/accept`;
 
+  // Formato oficial: plano, sin wrapper "session"
+  // Ref: https://developers.openai.com/api/docs/guides/realtime-sip
   const body = {
-    model: 'gpt-4o-realtime-preview',
-    session: {
-      type: 'realtime',
-      voice: 'alloy',
-      instructions: SYSTEM_INSTRUCTIONS,
-      input_audio_transcription: {
-        model: 'gpt-4o-mini-transcribe'
-      }
-    }
+    type: 'realtime',
+    model: 'gpt-realtime',
+    voice: 'alloy',
+    instructions: SYSTEM_INSTRUCTIONS
   };
 
   const headers = {
@@ -242,8 +239,11 @@ function openSideband(callId) {
     console.log(`[WS] Sideband conectado para call_id=${callId}`);
     activeCalls.set(callId, ws);
 
-    // Configurar la sesion con tools via session.update
+    // 1. Configurar tools via session.update
     sendSessionUpdate(ws, callId);
+
+    // 2. Pedir al modelo que salude (segun ejemplo oficial de OpenAI)
+    sendResponseCreate(ws, callId);
   });
 
   ws.on('message', (data) => {
@@ -271,8 +271,6 @@ function openSideband(callId) {
         break;
       case 'session.updated':
         console.log(`[WS] Sesion actualizada para call_id=${callId} — tools configuradas`);
-        // Ahora que las tools estan configuradas, pedimos al modelo que salude
-        sendResponseCreate(ws, callId);
         break;
       case 'response.done':
         console.log(`[WS] Respuesta del modelo completada`);

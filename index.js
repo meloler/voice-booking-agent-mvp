@@ -149,9 +149,9 @@ async function acceptCall(callId) {
   const url = `https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/accept`;
 
   const body = {
+    model: 'gpt-4o-realtime-preview',
     session: {
       type: 'realtime',
-      model: 'gpt-4o-realtime-preview',
       voice: 'alloy',
       instructions: SYSTEM_INSTRUCTIONS,
       input_audio_transcription: {

@@ -327,6 +327,7 @@ function sendSessionUpdate(ws, callId) {
   const sessionUpdate = {
     type: 'session.update',
     session: {
+      type: 'realtime',
       voice: 'alloy',
       tools: TOOLS,
       tool_choice: 'auto',

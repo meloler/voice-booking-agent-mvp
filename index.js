@@ -262,8 +262,10 @@ function openSideband(callId) {
     console.log(`[WS] Sideband conectado call_id=${callId}`);
     activeCalls.set(callId, ws);
 
+    // Solo enviamos session.update aqui.
+    // response.create lo enviamos tras session.updated para garantizar
+    // que las tools ya estan configuradas cuando el modelo saluda.
     sendSessionUpdate(ws, callId);
-    sendResponseCreate(ws, callId);
   });
 
   ws.on('message', (data) => {
@@ -284,6 +286,8 @@ function openSideband(callId) {
         break;
       case 'session.updated':
         console.log(`[WS] Sesion actualizada — tools configuradas`);
+        // Ahora que las tools estan listas, el modelo puede saludar
+        sendResponseCreate(ws, callId);
         break;
       case 'response.done':
         console.log(`[WS] Respuesta completada`);
@@ -424,28 +428,44 @@ async function handleCheckAvailability(ws, functionCallId, args, callId) {
   }
 
   try {
-    // Consultar eventos del dia en Google Calendar
-    const timeMin = `${date}T00:00:00`;
-    const timeMax = `${date}T23:59:59`;
+    // Obtener el offset UTC del timezone del negocio para este dia
+    const tzOffsetStr = getTzOffsetStr(date, BUSINESS.timezone);
+    console.log(`[GCAL] Timezone offset para ${date}: ${tzOffsetStr}`);
+
+    // Rango de busqueda: todo el dia en el timezone del negocio → convertido a UTC
+    const timeMin = new Date(`${date}T00:00:00${tzOffsetStr}`).toISOString();
+    const timeMax = new Date(`${date}T23:59:59${tzOffsetStr}`).toISOString();
 
     const eventsRes = await calendar.events.list({
       calendarId: GOOGLE_CALENDAR_ID,
-      timeMin: new Date(timeMin).toISOString(),
-      timeMax: new Date(timeMax).toISOString(),
+      timeMin,
+      timeMax,
       singleEvents: true,
       orderBy: 'startTime',
       timeZone: BUSINESS.timezone
     });
 
-    const busySlots = (eventsRes.data.items || []).map(ev => ({
-      start: ev.start.dateTime || ev.start.date,
-      end: ev.end.dateTime || ev.end.date
-    }));
+    const items = eventsRes.data.items || [];
+    console.log(`[GCAL] ${items.length} eventos encontrados el ${date}:`);
+    items.forEach(ev => console.log(`  - "${ev.summary || '(sin titulo)'}" ${ev.start.dateTime || ev.start.date} -> ${ev.end.dateTime || ev.end.date}`));
 
-    console.log(`[GCAL] ${busySlots.length} eventos encontrados el ${date}`);
+    // Convertir a rangos UTC para comparacion
+    const busySlots = items.map(ev => {
+      // Evento de dia completo: usar inicio/fin del dia en el timezone correcto
+      if (ev.start.date && !ev.start.dateTime) {
+        return {
+          start: new Date(`${ev.start.date}T00:00:00${tzOffsetStr}`),
+          end:   new Date(`${ev.end.date}T00:00:00${tzOffsetStr}`)
+        };
+      }
+      return {
+        start: new Date(ev.start.dateTime),
+        end:   new Date(ev.end.dateTime)
+      };
+    });
 
-    // Generar slots libres
-    const freeSlots = generateFreeSlots(date, windows, service.duration, busySlots);
+    // Generar slots libres (pasamos offset para construir Date correctos)
+    const freeSlots = generateFreeSlots(date, windows, service.duration, busySlots, tzOffsetStr);
 
     sendToolOutput(ws, functionCallId, {
       status: freeSlots.length > 0 ? 'success' : 'no_availability',
@@ -466,8 +486,10 @@ async function handleCheckAvailability(ws, functionCallId, args, callId) {
 
 /**
  * Genera slots libres dados las ventanas horarias, duracion y eventos ocupados.
+ * busySlots: array de { start: Date, end: Date } ya en UTC.
+ * tzOffsetStr: offset string como "+01:00" para construir Date correctos.
  */
-function generateFreeSlots(date, windows, durationMinutes, busySlots) {
+function generateFreeSlots(date, windows, durationMinutes, busySlots, tzOffsetStr) {
   const slots = [];
   const now = new Date();
 
@@ -477,23 +499,18 @@ function generateFreeSlots(date, windows, durationMinutes, busySlots) {
     const windowStartMin = startH * 60 + startM;
     const windowEndMin = endH * 60 + endM;
 
-    // Generar slots cada 30 minutos dentro de la ventana
     for (let min = windowStartMin; min + durationMinutes <= windowEndMin; min += 30) {
-      const slotStart = new Date(`${date}T${pad(Math.floor(min / 60))}:${pad(min % 60)}:00`);
+      const timeStr = `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
+      // Construir con timezone correcto para comparar en UTC
+      const slotStart = new Date(`${date}T${timeStr}:00${tzOffsetStr}`);
       const slotEnd = new Date(slotStart.getTime() + durationMinutes * 60000);
 
-      // Saltar slots en el pasado
       if (slotStart < now) continue;
 
-      // Verificar que no solape con ningun evento existente
-      const overlaps = busySlots.some(busy => {
-        const busyStart = new Date(busy.start);
-        const busyEnd = new Date(busy.end);
-        return slotStart < busyEnd && slotEnd > busyStart;
-      });
+      const overlaps = busySlots.some(busy => slotStart < busy.end && slotEnd > busy.start);
 
       if (!overlaps) {
-        slots.push(`${pad(Math.floor(min / 60))}:${pad(min % 60)}`);
+        slots.push(timeStr);
       }
     }
   }
@@ -524,6 +541,37 @@ function generateTheoreticalSlots(date, windows, durationMinutes) {
 }
 
 function pad(n) { return n.toString().padStart(2, '0'); }
+
+/**
+ * Calcula el offset UTC del timezone del negocio para una fecha dada.
+ * Devuelve string como "+01:00" o "-05:00".
+ * Tiene en cuenta DST correctamente via Intl.
+ */
+function getTzOffsetStr(date, timezone) {
+  // Usamos mediodia para evitar ambiguedades en cambios de hora
+  const ref = new Date(`${date}T12:00:00Z`);
+
+  // Formateamos en UTC y en el timezone objetivo para calcular la diferencia
+  const utcParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(ref);
+
+  const tzParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(ref);
+
+  const utcH = parseInt(utcParts.find(p => p.type === 'hour').value);
+  const utcM = parseInt(utcParts.find(p => p.type === 'minute').value);
+  const tzH  = parseInt(tzParts.find(p => p.type === 'hour').value);
+  const tzM  = parseInt(tzParts.find(p => p.type === 'minute').value);
+
+  const diffMin = (tzH * 60 + tzM) - (utcH * 60 + utcM);
+  const sign = diffMin >= 0 ? '+' : '-';
+  const abs = Math.abs(diffMin);
+  return `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
 
 // ============================================================================
 // BOOK APPOINTMENT — Google Calendar

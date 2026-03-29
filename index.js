@@ -9,15 +9,13 @@
  *                                               |                          |
  *                                          Audio (RTP)              Control (WebSocket)
  *
- * FLUJO:
- * 1. Un cliente llama al numero del negocio.
- * 2. Twilio enruta el audio via SIP TLS directamente a OpenAI.
- * 3. OpenAI dispara un webhook HTTP POST a nuestro endpoint /openai/realtime/call-incoming.
- * 4. Respondemos con las instrucciones de sesion (prompt, voz, tools).
- * 5. NOSOTROS abrimos un WebSocket sideband hacia OpenAI usando el call_id.
- * 6. Cuando el modelo necesita consultar disponibilidad, emite un function call por el WS.
- * 7. Ejecutamos la logica de negocio y devolvemos el resultado por el mismo WS.
- * 8. OpenAI verbaliza la respuesta al cliente por telefono.
+ * FLUJO CORRECTO (3 pasos):
+ * 1. Cliente llama -> Twilio SIP -> OpenAI -> POST webhook a nosotros
+ * 2. Respondemos 200 OK + llamamos REST API para ACEPTAR la llamada
+ * 3. Abrimos WebSocket sideband para control (tools, session.update)
+ * 4. Enviamos session.update con tools + response.create para que el modelo hable
+ * 5. Cuando el modelo necesita datos, emite function call por el WS
+ * 6. Ejecutamos logica y devolvemos resultado por el WS
  *
  * PRINCIPIO CLAVE: El audio NUNCA pasa por este servidor. Solo control y datos.
  * ============================================================================
@@ -51,76 +49,82 @@ const server = http.createServer(app);
 const activeCalls = new Map();
 
 // ============================================================================
+// INSTRUCCIONES DEL ASISTENTE Y TOOLS
+// ============================================================================
+
+const SYSTEM_INSTRUCTIONS = [
+  'Eres el asistente de reservas del negocio.',
+  'Se breve, amable y directo en castellano de Espana.',
+  'Indica al inicio que eres un asistente virtual.',
+  'Pide nombre y el servicio deseado.',
+  'Nunca inventes disponibilidad, siempre usa la herramienta check_availability.',
+  'Si el usuario interrumpe, callate inmediatamente y escucha.',
+  'Si no puedes completar la gestion, ofrece pasar con una persona del equipo.'
+].join(' ');
+
+const TOOLS = [
+  {
+    type: 'function',
+    name: 'check_availability',
+    description: 'Comprueba los huecos libres en el calendario para un dia y servicio especifico.',
+    parameters: {
+      type: 'object',
+      properties: {
+        date: {
+          type: 'string',
+          description: 'Fecha en formato ISO 8601 (YYYY-MM-DD).'
+        },
+        service_type: {
+          type: 'string',
+          enum: ['fisioterapia', 'consulta_general', 'revision'],
+          description: 'Tipo de servicio solicitado.'
+        }
+      },
+      required: ['date', 'service_type']
+    }
+  }
+];
+
+// ============================================================================
 // ENDPOINT HTTP — Webhook de llamada entrante
 // ============================================================================
 //
 // OpenAI envia un POST aqui cuando una llamada SIP llega.
-// Respondemos con la configuracion de sesion y ABRIMOS el WebSocket sideband.
+// Flujo:
+//   1. Responder 200 OK (solo acknowledge)
+//   2. Llamar REST API para aceptar la llamada
+//   3. Abrir WebSocket sideband
 //
 
-app.post('/openai/realtime/call-incoming', (req, res) => {
-  // Log del body COMPLETO para ver la estructura real de OpenAI
+app.post('/openai/realtime/call-incoming', async (req, res) => {
   console.log('[WEBHOOK] Body completo:', JSON.stringify(req.body, null, 2));
   console.log('[WEBHOOK] Headers:', JSON.stringify(req.headers, null, 2));
 
-  // Extraer campos — buscar en estructura plana y anidada
-  const callId = req.body.call_id || req.body.data?.call_id || req.body.id;
-  const from = req.body.from || req.body.data?.from;
-  const to = req.body.to || req.body.data?.to;
+  // Extraer call_id de la estructura del evento
+  const callId = req.body.data?.call_id || req.body.call_id || req.body.id;
+  const from = req.body.data?.from || req.body.from;
+  const to = req.body.data?.to || req.body.to;
 
   console.log(`[WEBHOOK] Llamada entrante: call_id=${callId}, from=${from}, to=${to}`);
 
-  // TODO: Validar firma del webhook
-  // const signature = req.headers['openai-signature'];
-  // const secret = process.env.OPENAI_WEBHOOK_SECRET;
+  // Paso 1: Responder 200 OK inmediatamente (solo acknowledge)
+  res.status(200).send();
+  console.log('[WEBHOOK] Respondido 200 OK');
 
-  // Configuracion de sesion para OpenAI
-  const sessionConfig = {
-    instructions: [
-      'Eres el asistente de reservas del negocio.',
-      'Sé breve, amable y directo en castellano de España.',
-      'Indica al inicio que eres un asistente virtual.',
-      'Pide nombre y el servicio deseado.',
-      'Nunca inventes disponibilidad, siempre usa la herramienta check_availability.',
-      'Si el usuario interrumpe, cállate inmediatamente y escucha.',
-      'Si no puedes completar la gestión, ofrece pasar con una persona del equipo.'
-    ].join(' '),
-
-    voice: 'alloy',
-    temperature: 0.6,
-
-    tools: [
-      {
-        type: 'function',
-        name: 'check_availability',
-        description: 'Comprueba los huecos libres en el calendario para un día y servicio específico.',
-        parameters: {
-          type: 'object',
-          properties: {
-            date: {
-              type: 'string',
-              description: 'Fecha en formato ISO 8601 (YYYY-MM-DD).'
-            },
-            service_type: {
-              type: 'string',
-              enum: ['fisioterapia', 'consulta_general', 'revision'],
-              description: 'Tipo de servicio solicitado.'
-            }
-          },
-          required: ['date', 'service_type']
-        }
-      }
-    ]
-  };
-
-  console.log('[WEBHOOK] Respondiendo con session config...');
-  res.status(200).json(sessionConfig);
-
-  // Abrir WebSocket sideband hacia OpenAI para esta llamada
-  // Lo hacemos DESPUES de responder al webhook (no bloqueamos la respuesta HTTP)
-  if (callId) {
-    openSideband(callId);
+  if (!callId) {
+    console.error('[WEBHOOK] No se encontro call_id en el body');
+    return;
   }
+
+  // Paso 2: Aceptar la llamada via REST API
+  const accepted = await acceptCall(callId);
+  if (!accepted) {
+    console.error(`[WEBHOOK] No se pudo aceptar la llamada call_id=${callId}`);
+    return;
+  }
+
+  // Paso 3: Abrir WebSocket sideband
+  openSideband(callId);
 });
 
 // Health check
@@ -133,21 +137,76 @@ app.get('/health', (req, res) => {
 });
 
 // ============================================================================
+// ACCEPT CALL — REST API para aceptar la llamada
+// ============================================================================
+//
+// POST https://api.openai.com/v1/realtime/calls/{call_id}/accept
+// Esto le dice a OpenAI que aceptamos la llamada y con que configuracion base.
+// Las tools se configuran DESPUES via session.update en el WebSocket.
+//
+
+async function acceptCall(callId) {
+  const url = `https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/accept`;
+
+  const body = {
+    model: 'gpt-4o-realtime-preview',
+    voice: 'alloy',
+    instructions: SYSTEM_INSTRUCTIONS,
+    input_audio_transcription: {
+      model: 'gpt-4o-mini-transcribe'
+    }
+  };
+
+  const headers = {
+    'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    'Content-Type': 'application/json'
+  };
+
+  if (OPENAI_PROJECT_ID) {
+    headers['OpenAI-Project'] = OPENAI_PROJECT_ID;
+  }
+
+  console.log(`[ACCEPT] Aceptando llamada call_id=${callId}`);
+  console.log(`[ACCEPT] URL: ${url}`);
+  console.log(`[ACCEPT] Body: ${JSON.stringify(body)}`);
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    });
+
+    const responseText = await response.text();
+    console.log(`[ACCEPT] Status: ${response.status}`);
+    console.log(`[ACCEPT] Response: ${responseText}`);
+
+    if (!response.ok) {
+      console.error(`[ACCEPT] Error aceptando llamada: ${response.status} ${responseText}`);
+      return false;
+    }
+
+    console.log(`[ACCEPT] Llamada aceptada exitosamente call_id=${callId}`);
+    return true;
+  } catch (err) {
+    console.error(`[ACCEPT] Error de red aceptando llamada:`, err.message);
+    return false;
+  }
+}
+
+// ============================================================================
 // WEBSOCKET SIDEBAND — Nosotros conectamos hacia OpenAI
 // ============================================================================
 //
-// Despues de aceptar la llamada via webhook, NOSOTROS abrimos un WebSocket
-// contra OpenAI usando el call_id. Este es el canal por donde:
+// Despues de aceptar la llamada, abrimos un WebSocket sideband.
+// Este es el canal por donde:
+//   - Configuramos tools via session.update
 //   - Recibimos function calls del modelo
 //   - Enviamos resultados de herramientas
-//   - Controlamos el flujo de la conversacion
-//
-// URL: wss://api.openai.com/v1/realtime?call_id=<CALL_ID>
-// Auth: Bearer token + OpenAI-Project header
+//   - Pedimos al modelo que hable con response.create
 //
 
 function openSideband(callId) {
-  // Evitar duplicados
   if (activeCalls.has(callId)) {
     console.warn(`[WS] Sideband ya abierto para call_id=${callId}`);
     return;
@@ -158,11 +217,9 @@ function openSideband(callId) {
   console.log(`[WS] Abriendo sideband hacia OpenAI para call_id=${callId}`);
 
   const headers = {
-    'Authorization': `Bearer ${OPENAI_API_KEY}`,
-    'OpenAI-Beta': 'realtime=v1'
+    'Authorization': `Bearer ${OPENAI_API_KEY}`
   };
 
-  // Si tenemos Project ID, lo incluimos
   if (OPENAI_PROJECT_ID) {
     headers['OpenAI-Project'] = OPENAI_PROJECT_ID;
   }
@@ -181,6 +238,9 @@ function openSideband(callId) {
     clearTimeout(connectTimeout);
     console.log(`[WS] Sideband conectado para call_id=${callId}`);
     activeCalls.set(callId, ws);
+
+    // Configurar la sesion con tools via session.update
+    sendSessionUpdate(ws, callId);
   });
 
   ws.on('message', (data) => {
@@ -207,7 +267,9 @@ function openSideband(callId) {
         console.log(`[WS] Sesion creada para call_id=${callId}`);
         break;
       case 'session.updated':
-        console.log(`[WS] Sesion actualizada para call_id=${callId}`);
+        console.log(`[WS] Sesion actualizada para call_id=${callId} — tools configuradas`);
+        // Ahora que las tools estan configuradas, pedimos al modelo que salude
+        sendResponseCreate(ws, callId);
         break;
       case 'response.done':
         console.log(`[WS] Respuesta del modelo completada`);
@@ -235,7 +297,6 @@ function openSideband(callId) {
         console.error('[WS] Error de OpenAI:', JSON.stringify(event.error));
         break;
       default:
-        // Muchos eventos mas (deltas, etc.) — los ignoramos
         break;
     }
   });
@@ -251,6 +312,43 @@ function openSideband(callId) {
     console.error(`[WS] Error sideband call_id=${callId}:`, err.message);
     activeCalls.delete(callId);
   });
+}
+
+// ============================================================================
+// SESSION UPDATE — Configurar tools en el WebSocket
+// ============================================================================
+
+function sendSessionUpdate(ws, callId) {
+  if (ws.readyState !== WebSocket.OPEN) {
+    console.warn(`[WS] Socket cerrado, no se puede enviar session.update (call_id=${callId})`);
+    return;
+  }
+
+  const sessionUpdate = {
+    type: 'session.update',
+    session: {
+      tools: TOOLS,
+      tool_choice: 'auto',
+      temperature: 0.6
+    }
+  };
+
+  ws.send(JSON.stringify(sessionUpdate));
+  console.log(`[WS] Enviado session.update con ${TOOLS.length} tools para call_id=${callId}`);
+}
+
+// ============================================================================
+// RESPONSE CREATE — Pedir al modelo que inicie la conversacion
+// ============================================================================
+
+function sendResponseCreate(ws, callId) {
+  if (ws.readyState !== WebSocket.OPEN) {
+    console.warn(`[WS] Socket cerrado, no se puede enviar response.create (call_id=${callId})`);
+    return;
+  }
+
+  ws.send(JSON.stringify({ type: 'response.create' }));
+  console.log(`[WS] Enviado response.create para call_id=${callId} — modelo deberia saludar`);
 }
 
 // ============================================================================
@@ -311,13 +409,6 @@ function handleCheckAvailability(ws, functionCallId, args, callId) {
 // UTILIDADES DE ENVIO WEBSOCKET
 // ============================================================================
 
-/**
- * Envia el resultado de un function call de vuelta a OpenAI.
- *
- * Flujo en dos pasos:
- * 1. conversation.item.create con function_call_output -> le da el dato al modelo
- * 2. response.create -> le dice al modelo "ahora habla"
- */
 function sendToolOutput(ws, functionCallId, output, callId) {
   if (ws.readyState !== WebSocket.OPEN) {
     console.warn(`[WS] Socket cerrado, no se puede enviar respuesta (call_id=${callId})`);
@@ -353,4 +444,7 @@ server.listen(PORT, () => {
   console.log(`  Health:    GET /health`);
   console.log(`  Project:   ${OPENAI_PROJECT_ID || '(no configurado)'}`);
   console.log('='.repeat(60));
+  console.log('');
+  console.log('  Flujo: Webhook 200 -> Accept REST API -> WS Sideband');
+  console.log('');
 });

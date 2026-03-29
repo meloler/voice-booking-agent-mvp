@@ -337,9 +337,7 @@ function sendSessionUpdate(ws, callId) {
   ws.send(JSON.stringify({
     type: 'session.update',
     session: {
-      tools: TOOLS,
-      tool_choice: 'auto',
-      temperature: 0.6
+      tools: TOOLS
     }
   }));
   console.log(`[WS] Enviado session.update con ${TOOLS.length} tools`);
@@ -393,11 +391,16 @@ function handleFunctionCall(ws, event, callId) {
 // ============================================================================
 
 async function handleCheckAvailability(ws, functionCallId, args, callId) {
-  const { date, service_type } = args;
-  const service = BUSINESS.services[service_type];
+  const { date } = args;
+  const serviceKey = resolveServiceKey(args);
+  const service = serviceKey ? BUSINESS.services[serviceKey] : null;
 
   if (!service) {
-    sendToolOutput(ws, functionCallId, { error: `Servicio '${service_type}' no existe` }, callId);
+    const received = args.service_type || args.service || '(ninguno)';
+    console.warn(`[TOOL] Servicio no reconocido: "${received}"`);
+    sendToolOutput(ws, functionCallId, {
+      error: `Servicio '${received}' no reconocido. Los servicios disponibles son: ${Object.values(BUSINESS.services).map(s => s.name).join(', ')}.`
+    }, callId);
     return;
   }
 
@@ -544,6 +547,28 @@ function generateTheoreticalSlots(date, windows, durationMinutes) {
 function pad(n) { return n.toString().padStart(2, '0'); }
 
 /**
+ * Resuelve el service key ("revision", "limpieza", "empaste") a partir de los
+ * argumentos que manda el modelo. El modelo puede mandar:
+ *   - service_type: "limpieza"  (enum key — lo que queremos)
+ *   - service: "Limpieza dental" (nombre completo)
+ *   - service: "limpieza" (enum key en campo service)
+ * Devuelve el key del servicio o null si no lo encuentra.
+ */
+function resolveServiceKey(args) {
+  // 1) service_type exacto
+  if (args.service_type && BUSINESS.services[args.service_type]) return args.service_type;
+  // 2) service como clave exacta
+  if (args.service && BUSINESS.services[args.service]) return args.service;
+  // 3) busqueda por nombre (case-insensitive)
+  const input = (args.service_type || args.service || '').toLowerCase().trim();
+  if (!input) return null;
+  return Object.keys(BUSINESS.services).find(key => {
+    const svcName = BUSINESS.services[key].name.toLowerCase();
+    return key === input || svcName === input || svcName.includes(input) || input.includes(key);
+  }) || null;
+}
+
+/**
  * Calcula el offset UTC del timezone del negocio para una fecha dada.
  * Devuelve string como "+01:00" o "-05:00".
  * Tiene en cuenta DST correctamente via Intl.
@@ -579,11 +604,15 @@ function getTzOffsetStr(date, timezone) {
 // ============================================================================
 
 async function handleBookAppointment(ws, functionCallId, args, callId) {
-  const { date, time, service_type, patient_name } = args;
-  const service = BUSINESS.services[service_type];
+  const { date, time, patient_name } = args;
+  const serviceKey = resolveServiceKey(args);
+  const service = serviceKey ? BUSINESS.services[serviceKey] : null;
 
   if (!service) {
-    sendToolOutput(ws, functionCallId, { error: `Servicio '${service_type}' no existe` }, callId);
+    const received = args.service_type || args.service || '(ninguno)';
+    sendToolOutput(ws, functionCallId, {
+      error: `Servicio '${received}' no reconocido. Los servicios disponibles son: ${Object.values(BUSINESS.services).map(s => s.name).join(', ')}.`
+    }, callId);
     return;
   }
 

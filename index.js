@@ -262,10 +262,14 @@ function openSideband(callId) {
     console.log(`[WS] Sideband conectado call_id=${callId}`);
     activeCalls.set(callId, ws);
 
-    // Solo enviamos session.update aqui.
-    // response.create lo enviamos tras session.updated para garantizar
-    // que las tools ya estan configuradas cuando el modelo saluda.
+    // Enviamos session.update para configurar tools
     sendSessionUpdate(ws, callId);
+
+    // Enviamos response.create aqui directamente — no esperamos session.updated
+    // porque si session.update falla, session.updated no se dispara nunca
+    // y el modelo nunca saluda. El modelo saluda con las tools disponibles
+    // ya que WebSocket procesa mensajes en orden.
+    sendResponseCreate(ws, callId);
   });
 
   ws.on('message', (data) => {
@@ -286,8 +290,6 @@ function openSideband(callId) {
         break;
       case 'session.updated':
         console.log(`[WS] Sesion actualizada — tools configuradas`);
-        // Ahora que las tools estan listas, el modelo puede saludar
-        sendResponseCreate(ws, callId);
         break;
       case 'response.done':
         console.log(`[WS] Respuesta completada`);
@@ -335,7 +337,6 @@ function sendSessionUpdate(ws, callId) {
   ws.send(JSON.stringify({
     type: 'session.update',
     session: {
-      type: 'realtime',
       tools: TOOLS,
       tool_choice: 'auto',
       temperature: 0.6

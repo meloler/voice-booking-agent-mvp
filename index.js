@@ -337,6 +337,7 @@ function sendSessionUpdate(ws, callId) {
   ws.send(JSON.stringify({
     type: 'session.update',
     session: {
+      type: 'realtime',
       tools: TOOLS
     }
   }));

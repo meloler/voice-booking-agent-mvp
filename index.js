@@ -212,14 +212,6 @@ async function acceptCall(callId) {
   const body = {
     type: 'realtime',
     model: 'gpt-realtime',
-    voice: 'coral',
-    temperature: 0.7,
-    turn_detection: {
-      type: 'server_vad',
-      threshold: 0.5,
-      prefix_padding_ms: 300,
-      silence_duration_ms: 400
-    },
     instructions: SYSTEM_INSTRUCTIONS
   };
 

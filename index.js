@@ -212,6 +212,14 @@ async function acceptCall(callId) {
   const body = {
     type: 'realtime',
     model: 'gpt-realtime',
+    voice: 'coral',
+    temperature: 0.7,
+    turn_detection: {
+      type: 'server_vad',
+      threshold: 0.5,
+      prefix_padding_ms: 300,
+      silence_duration_ms: 400
+    },
     instructions: SYSTEM_INSTRUCTIONS
   };
 
@@ -340,14 +348,6 @@ function sendSessionUpdate(ws, callId) {
     type: 'session.update',
     session: {
       type: 'realtime',
-      voice: 'coral', // Opciones: 'alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse'
-      temperature: 0.7, // Respuestas más conversacionales y menos robóticas
-      turn_detection: {
-        type: 'server_vad',
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 400 // Reduce de 500ms a 400ms para que responda más ágilmente al dejar de hablar
-      },
       tools: TOOLS
     }
   }));

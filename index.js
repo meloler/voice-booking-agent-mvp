@@ -211,7 +211,8 @@ async function acceptCall(callId) {
 
   const body = {
     type: 'realtime',
-    model: 'gpt-realtime',
+    model: 'gpt-4o-realtime-preview-2024-10-01',
+    voice: 'coral',
     instructions: SYSTEM_INSTRUCTIONS
   };
 
@@ -340,10 +341,17 @@ function sendSessionUpdate(ws, callId) {
     type: 'session.update',
     session: {
       type: 'realtime',
+      temperature: 0.7, // Respuestas más conversacionales
+      turn_detection: {
+        type: 'server_vad',
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 400 // Reduce de 500ms a 400ms para mayor fluidez
+      },
       tools: TOOLS
     }
   }));
-  console.log(`[WS] Enviado session.update con ${TOOLS.length} tools`);
+  console.log(`[WS] Enviado session.update con turn_detection y ${TOOLS.length} tools`);
 }
 
 function sendResponseCreate(ws, callId) {

@@ -97,16 +97,18 @@ const BUSINESS = {
 
 const SYSTEM_INSTRUCTIONS = [
   `Eres el asistente virtual de ${BUSINESS.name}.`,
-  'Habla en castellano de Espana, se breve y amable.',
-  'Al inicio saluda e indica que eres un asistente virtual.',
-  'Pregunta el nombre del paciente y que servicio necesita.',
-  `Los servicios disponibles son: ${Object.values(BUSINESS.services).map(s => s.name).join(', ')}.`,
+  'Habla en castellano de Espana, con un tono muy natural, fresco y amable.',
+  'Usa frases cortas, directas y evita sonar como un robot leyendo una lista o un menu largo.',
+  'Al inicio saluda brevemente e indica que eres un asistente virtual.',
+  'Responde siempre de forma muy conversacional como si estuvieras charlando con un amigo.',
+  'Pregunta el nombre del paciente y que servicio necesita de manera empatica.',
+  `Si preguntan, los servicios son: ${Object.values(BUSINESS.services).map(s => s.name).join(', ')}. (No los leas todos de golpe si no es necesario).`,
   'Horario: lunes a viernes de 9 a 14 y de 16 a 20.',
-  'Cuando el paciente pida cita, usa check_availability para consultar huecos reales.',
-  'Nunca inventes disponibilidad.',
-  'Cuando el paciente elija un hueco, usa book_appointment para confirmar la reserva.',
-  'Si el usuario interrumpe, callate y escucha.',
-  'Si no puedes resolver algo, ofrece pasar con una persona del equipo.'
+  'Cuando el paciente pida cita, usa "check_availability" para consultar huecos reales. Usa lenguaje muy natural: "dejame mirar la agenda un segundito...", y en cuanto tengas la lista, dile solo 1 o 2 opciones y preguntale cual le viene mejor, no le sueltes una ristra de horas (e.g. "tengo hueco manana a las 10 o a las 11 y media, que prefieres?").',
+  'Nunca inventes disponibilidad de horas.',
+  'Cuando elija hueco, usa "book_appointment", y luego confirma alegremente que ya esta anotado.',
+  'Si te interrumpe, deja de hablar al instante y escucha atentamente sin enfadarte.',
+  'Si la peticion es muy rara o no puedes resolverla, ofrece amablemente apuntar su nombre para que le llame luego un companero de la clinica.'
 ].join(' ');
 
 const TOOLS = [
@@ -338,6 +340,14 @@ function sendSessionUpdate(ws, callId) {
     type: 'session.update',
     session: {
       type: 'realtime',
+      voice: 'coral', // Opciones: 'alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse'
+      temperature: 0.7, // Respuestas más conversacionales y menos robóticas
+      turn_detection: {
+        type: 'server_vad',
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 400 // Reduce de 500ms a 400ms para que responda más ágilmente al dejar de hablar
+      },
       tools: TOOLS
     }
   }));
